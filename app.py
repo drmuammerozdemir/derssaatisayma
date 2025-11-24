@@ -1,5 +1,52 @@
 import streamlit as st
 import pandas as pd
+import re
+
+# Ünvan hiyerarşisi
+unvan_priority = {
+    "prof dr": "Prof. Dr.",
+    "prof. dr": "Prof. Dr.",
+    "doç dr": "Doç. Dr.",
+    "doç. dr": "Doç. Dr.",
+    "dr öğretim üyesi": "Dr. Öğr. Üyesi",
+    "dr. öğretim üyesi": "Dr. Öğr. Üyesi",
+    "dr öğrt üyesi": "Dr. Öğr. Üyesi",
+    "dr. öğrt. üyesi": "Dr. Öğr. Üyesi",
+    "öğr gör dr": "Öğr. Gör. Dr.",
+    "öğr. gör. dr": "Öğr. Gör. Dr.",
+    "öğr gör": "Öğr. Gör.",
+    "öğr. gör": "Öğr. Gör."
+}
+
+def extract_unvan_and_name(raw):
+    """
+    Metinden unvanı ayıklar. En büyük unvanı seçer.
+    Eğer unvan yoksa yalnızca ismi döner.
+    """
+    text = raw.lower().strip()
+
+    found_unvan = None
+    for key in unvan_priority:
+        if key in text:
+            if found_unvan is None:
+                found_unvan = key
+            else:
+                # En büyük unvanı seçme
+                if list(unvan_priority.keys()).index(key) < list(unvan_priority.keys()).index(found_unvan):
+                    found_unvan = key
+
+    # Ünvanı silip sadece ismi al
+    clean_name = raw
+    for key in unvan_priority:
+        clean_name = re.sub(key, "", clean_name, flags=re.IGNORECASE)
+
+    clean_name = clean_name.replace(".", "").strip()
+    
+    if found_unvan:
+        final_unvan = unvan_priority[found_unvan]
+        return final_unvan, clean_name
+    else:
+        return None, clean_name
 
 st.set_page_config(page_title="Ders Saati Analiz Aracı", layout="wide")
 
