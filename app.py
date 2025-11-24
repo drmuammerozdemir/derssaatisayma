@@ -2,7 +2,63 @@ import streamlit as st
 import pandas as pd
 import re
 
-# Ünvan hiyerarşisi
+# --------------------------------------------------- #
+#   Branş çıkarma fonksiyonu                          #
+# --------------------------------------------------- #
+
+def extract_possible_branches(df):
+    """
+    Ders adı, ders başlığı ve kurul isimlerinde geçen olası branş isimlerini
+    otomatik çıkarır. Büyük-küçük harf farklarını düzeltir.
+    Çok kısa/önemsiz kelimeleri atar.
+    """
+    text_sources = []
+
+    # Ders adı
+    if "ders_adi" in df.columns:
+        text_sources += df["ders_adi"].dropna().astype(str).tolist()
+
+    # Ders başlığı
+    if "ders_basligi" in df.columns:
+        text_sources += df["ders_basligi"].dropna().astype(str).tolist()
+
+    # Kurul adları
+    if "kurul" in df.columns:
+        text_sources += df["kurul"].dropna().astype(str).tolist()
+
+    if not text_sources:
+        return []
+
+    text_blob = " ".join(text_sources).lower()
+
+    # Branş gibi görünen kelime örüntüsü
+    candidates = re.findall(r"[a-zçğıöşü]{4,30}", text_blob)
+
+    ignore = {"ders", "kurul", "uyesi", "öğretim", "ogretim", "komite", "hafta", "teorik", "pratik"}
+
+    filtered = []
+    for c in candidates:
+        if c not in ignore and len(c) > 3:
+            filtered.append(c.capitalize())
+
+    unique = sorted(set(filtered))
+
+    # Biyokimya, Mikrobiyoloji, Fizyoloji vb. için son ekleri geniş tuttuk
+    branch_like = [
+        x for x in unique
+        if x.endswith(("ji", "mi", "loji", "oloji", "logy", "kimya", "liği", "lığı"))
+    ]
+
+    # Hiç bulamazsa unique listesinden 20 maddeye kadar dön
+    if not branch_like:
+        branch_like = unique[:20]
+
+    return branch_like
+
+# --------------------------------------------------- #
+#   Ünvan hiyerarşisi & ayıklama                      #
+# --------------------------------------------------- #
+
 unvan_priority = {
     "prof dr": "Prof. Dr.",
     "prof. dr": "Prof. Dr.",
@@ -15,38 +71,52 @@ unvan_priority = {
     "öğr gör dr": "Öğr. Gör. Dr.",
     "öğr. gör. dr": "Öğr. Gör. Dr.",
     "öğr gör": "Öğr. Gör.",
-    "öğr. gör": "Öğr. Gör."
+    "öğr. gör": "Öğr. Gör.",
+}
+
+# Normalleştirilmiş ünvan için rank (büyüklük sırası)
+unvan_rank_order = {
+    "Prof. Dr.": 4,
+    "Doç. Dr.": 3,
+    "Dr. Öğr. Üyesi": 2,
+    "Öğr. Gör. Dr.": 1,
+    "Öğr. Gör.": 0,
 }
 
 def extract_unvan_and_name(raw):
     """
-    Metinden unvanı ayıklar. En büyük unvanı seçer.
+    Metinden unvanı ayıklar. Satır içindeki en büyük unvanı seçer.
     Eğer unvan yoksa yalnızca ismi döner.
     """
-    text = raw.lower().strip()
+    text = str(raw).lower().strip()
 
-    found_unvan = None
+    found_unvan_key = None
     for key in unvan_priority:
         if key in text:
-            if found_unvan is None:
-                found_unvan = key
+            if found_unvan_key is None:
+                found_unvan_key = key
             else:
-                # En büyük unvanı seçme
-                if list(unvan_priority.keys()).index(key) < list(unvan_priority.keys()).index(found_unvan):
-                    found_unvan = key
+                # Sıradaki key, listedeki pozisyonu daha küçükse "daha büyük" ünvan say
+                keys_list = list(unvan_priority.keys())
+                if keys_list.index(key) < keys_list.index(found_unvan_key):
+                    found_unvan_key = key
 
-    # Ünvanı silip sadece ismi al
-    clean_name = raw
+    # Metinden ünvan parçalarını silip sadece ismi bırak
+    clean_name = str(raw)
     for key in unvan_priority:
         clean_name = re.sub(key, "", clean_name, flags=re.IGNORECASE)
 
     clean_name = clean_name.replace(".", "").strip()
-    
-    if found_unvan:
-        final_unvan = unvan_priority[found_unvan]
+
+    if found_unvan_key:
+        final_unvan = unvan_priority[found_unvan_key]
         return final_unvan, clean_name
     else:
         return None, clean_name
+
+# --------------------------------------------------- #
+#   Streamlit ayarları                                #
+# --------------------------------------------------- #
 
 st.set_page_config(page_title="Ders Saati Analiz Aracı", layout="wide")
 
@@ -54,7 +124,9 @@ st.title("🏫 Tıp Fakültesi Ders Saati Analiz Aracı")
 st.write(
     "Bu arayüz, yüklediğiniz **Dönem 1–2–3 Excel dosyalarındaki** "
     "Kurul sayfalarından her hocanın **hangi kurulda kaç saat** derse girdiğini, "
-    "bu derslerin neler olduğunu ve **ders bazlı filtrelemeyi** sağlar."
+    "bu derslerin neler olduğunu, **ders** ve **branş** bazlı filtrelemeyi sağlar. "
+    "Hoca isimleri tüm varyantlarıyla birleştirilir, her hocanın satırlarda geçen "
+    "en yüksek ünvanı otomatik olarak başına eklenir."
 )
 
 # --------------------------------------------------- #
@@ -158,7 +230,7 @@ def extract_from_excel(file_obj, period_label: str) -> pd.DataFrame:
     return out
 
 # --------------------------------------------------- #
-#   2) Tüm dosyaları birleştir + isim normalize       #
+#   2) Tüm dosyaları birleştir + isim & ünvan         #
 # --------------------------------------------------- #
 
 all_lectures = []
@@ -182,26 +254,57 @@ if df.empty:
     st.error("Hoca satırı bulunamadı. Lütfen dosya içeriklerini kontrol edin.")
     st.stop()
 
-# Küçük/büyük harf farklarını birleştirmek için anahtar üret
-# Örn: "muammer özdemir" → hepsi tek kişi
-name_key = df["ogretim_uyesi_raw"].str.lower()
+# Satır bazında ünvan ve temiz isim ayıkla
+unvan_isim_df = df["ogretim_uyesi_raw"].apply(
+    lambda s: pd.Series(extract_unvan_and_name(s), index=["unvan", "isim_temiz"])
+)
+df = pd.concat([df, unvan_isim_df], axis=1)
 
-# Aynı anahtar için ilk görülen yazımı 'kanonik' isim yapalım
+df["isim_temiz"] = df["isim_temiz"].astype(str).str.strip()
+df["name_key"] = df["isim_temiz"].str.lower().str.strip()
+
+# Boş isimleri at
+df = df[df["name_key"] != ""]
+
+# Her satır için ünvan rank
+df["unvan_rank"] = df["unvan"].map(unvan_rank_order).fillna(-1).astype(int)
+
+# Aynı kişiye ait satırlarda en yüksek ünvanı bul
+best_rank_per_person = df.groupby("name_key")["unvan_rank"].transform("max")
+rank_to_title = {v: k for k, v in unvan_rank_order.items()}
+df["unvan_final"] = best_rank_per_person.map(rank_to_title)
+
+# Aynı kişiye ait satırlarda kanonik isim (ilk görülen temiz isim)
 name_map = {}
-for raw_name, key in zip(df["ogretim_uyesi_raw"], name_key):
-    if key not in name_map:
-        name_map[key] = raw_name  # ilk görüleni kabul et
+for clean_name, key in zip(df["isim_temiz"], df["name_key"]):
+    if key not in name_map and clean_name:
+        name_map[key] = clean_name.strip()
 
-df["ogretim_uyesi"] = name_key.map(name_map)
+df["isim_kanonik"] = df["name_key"].map(name_map)
+
+# Son gösterilecek hoca adı: "Ünvan + İsim" veya sadece isim
+def build_display_name(row):
+    if pd.notna(row["unvan_final"]):
+        return f"{row['unvan_final']} {row['isim_kanonik']}"
+    else:
+        return row["isim_kanonik"]
+
+df["ogretim_uyesi"] = df.apply(build_display_name, axis=1)
 
 # --------------------------------------------------- #
-#   3) Filtre alanları (dönem, kurul, hoca, ders)     #
+#   3) Branş listesini Excel'den çek                  #
+# --------------------------------------------------- #
+
+branch_list = extract_possible_branches(df)
+
+# --------------------------------------------------- #
+#   4) Filtre alanları (dönem, kurul, hoca, ders, branş)
 # --------------------------------------------------- #
 
 st.sidebar.markdown("---")
 st.sidebar.header("3️⃣ Filtreler")
 
-# Hoca listesi (normalize edilmiş)
+# Hoca listesi (normalize + ünvanlı)
 teacher_list = sorted(df["ogretim_uyesi"].unique())
 secili_hoca = st.sidebar.selectbox(
     "Hoca filtresi",
@@ -230,8 +333,21 @@ secili_ders = st.sidebar.multiselect(
     default=ders_list,  # başlangıçta tüm dersler dahil
 )
 
+# Branş filtresi (Excel'den otomatik çekilen liste)
+st.sidebar.markdown("---")
+st.sidebar.header("4️⃣ Branş filtresi")
+
+if branch_list:
+    secili_brans = st.sidebar.selectbox(
+        "Branş seç (Opsiyonel)",
+        options=["(Tümü)"] + branch_list,
+    )
+else:
+    secili_brans = "(Tümü)"
+    st.sidebar.caption("Olası branş ismi bulunamadı, tüm dersler gösteriliyor.")
+
 # --------------------------------------------------- #
-#   4) Filtreleri df üzerine uygula                   #
+#   5) Filtreleri df üzerine uygula                   #
 # --------------------------------------------------- #
 
 df_filtered = df.copy()
@@ -245,6 +361,15 @@ df_filtered = df_filtered[
 if secili_ders:
     df_filtered = df_filtered[df_filtered["ders_adi"].astype(str).isin(secili_ders)]
 
+# Branş filtresi (ders adı, ders başlığı veya kurul içinde geçen)
+if secili_brans != "(Tümü)":
+    br = secili_brans
+    df_filtered = df_filtered[
+        df_filtered["ders_adi"].astype(str).str.contains(br, case=False, na=False)
+        | df_filtered["ders_basligi"].astype(str).str.contains(br, case=False, na=False)
+        | df_filtered["kurul"].astype(str).str.contains(br, case=False, na=False)
+    ]
+
 # Hoca filtresi
 if secili_hoca != "(Tümü)":
     df_filtered = df_filtered[df_filtered["ogretim_uyesi"] == secili_hoca]
@@ -254,7 +379,7 @@ if df_filtered.empty:
     st.stop()
 
 # --------------------------------------------------- #
-#   5) Özet tabloları filtrelenmiş df'den üret        #
+#   6) Özet tabloları filtrelenmiş df'den üret        #
 # --------------------------------------------------- #
 
 # Hoca bazında genel özet (filtrelenmiş veri üzerinden)
@@ -291,7 +416,7 @@ per_kurul_goster = (
 per_kurul_goster["toplam_ders_saati"] = per_kurul_goster["ders_sayisi"]
 
 # --------------------------------------------------- #
-#   6) Görünüm                                       #
+#   7) Görünüm                                       #
 # --------------------------------------------------- #
 
 st.subheader("👨‍🏫 Hocaların Toplam Ders Saatleri (Filtrelere Göre)")
