@@ -381,4 +381,30 @@ st.dataframe(
 )
 
 st.download_button(
-    "⬇️ Hoca bazlı özeti CSV
+    "⬇️ Hoca bazlı özeti CSV olarak indir",
+    data=per_hoca_goster.to_csv(index=False).encode("utf-8-sig"),
+    file_name="hoca_ozetleri.csv",
+    mime="text/csv",
+)
+
+st.markdown("---")
+
+st.subheader("📚 Hoca / Dönem / Kurul / Ders bazında detay (Filtrelere Göre)")
+
+st.dataframe(
+    per_kurul_goster.reset_index(drop=True),
+    use_container_width=True,
+)
+
+st.download_button(
+    "⬇️ Kurul bazlı detaylı tabloyu CSV olarak indir",
+    data=per_kurul_goster.to_csv(index=False).encode("utf-8-sig"),
+    file_name="hoca_donem_kurul_ders_detay.csv",
+    mime="text/csv",
+)
+
+st.markdown("---")
+
+st.subheader("🔍 Satır bazında ham veriler (Filtrelenmiş)")
+with st.expander("Ham ders satırlarını göster"):
+    st.dataframe(df_filtered.reset_index(drop=True), use_container_width=True)
