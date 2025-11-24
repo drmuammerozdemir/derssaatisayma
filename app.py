@@ -6,9 +6,13 @@ st.set_page_config(page_title="Ders Saati Analiz Aracı", layout="wide")
 st.title("🏫 Tıp Fakültesi Ders Saati Analiz Aracı")
 st.write(
     "Bu arayüz, yüklediğiniz **Dönem 1–2–3 Excel dosyalarındaki** "
-    "Kurul sayfalarından her hocanın **hangi kurulda kaç saat** derse girdiğini "
-    "ve bu derslerin hangileri olduğunu hesaplar."
+    "Kurul sayfalarından her hocanın **hangi kurulda kaç saat** derse girdiğini, "
+    "bu derslerin neler olduğunu ve **ders bazlı filtrelemeyi** sağlar."
 )
+
+# --------------------------------------------------- #
+#   1) Dosya yükleme                                   #
+# --------------------------------------------------- #
 
 st.sidebar.header("1️⃣ Excel dosyalarını yükle")
 
@@ -31,12 +35,9 @@ for uf in uploaded_files:
         f"'{uf.name}' için dönem adı", value=default_label
     )
 
-st.sidebar.markdown("---")
-st.sidebar.header("3️⃣ Filtreler")
-
-# ------------------------------- #
-#   Yardımcı fonksiyonlar         #
-# ------------------------------- #
+# --------------------------------------------------- #
+#   Yardımcı fonksiyon: Excel'den dersleri çekme      #
+# --------------------------------------------------- #
 
 def extract_from_excel(file_obj, period_label: str) -> pd.DataFrame:
     """
@@ -47,7 +48,6 @@ def extract_from_excel(file_obj, period_label: str) -> pd.DataFrame:
       - C sütunu: Ders Adı
       - D sütunu: Ders Başlığı
       - E sütunu: Öğretim Üyesi
-      - F sütunu: Öğrenim Hedefi
     yapısına göre hoca bazlı satırları çıkarır.
     """
     try:
@@ -70,28 +70,28 @@ def extract_from_excel(file_obj, period_label: str) -> pd.DataFrame:
         if "skt" in sname_lower or "toplam" in sname_lower:
             continue
 
-        df = xls.parse(sheet)
+        df_sheet = xls.parse(sheet)
 
         # En az 5 sütun olmalı (Saat, Ders kodu, Ders adı, Ders başlığı, Öğretim üyesi)
-        if df.shape[1] < 5:
+        if df_sheet.shape[1] < 5:
             continue
 
-        col_time, col_code, col_course, col_title, col_teacher = df.columns[:5]
+        col_time, col_code, col_course, col_title, col_teacher = df_sheet.columns[:5]
 
         # Tamamen boşsa at
-        if df[col_teacher].isna().all():
+        if df_sheet[col_teacher].isna().all():
             continue
 
         mask = (
-            df[col_teacher].notna()
-            & df[col_code].notna()
-            & df[col_course].notna()
+            df_sheet[col_teacher].notna()
+            & df_sheet[col_code].notna()
+            & df_sheet[col_course].notna()
         )
 
         # Başlık satırlarını ele (Öğretim Üyesi yazan satırları alma)
-        mask &= df[col_teacher].astype(str).str.strip().ne("Öğretim Üyesi")
+        mask &= df_sheet[col_teacher].astype(str).str.strip().ne("Öğretim Üyesi")
 
-        sub = df.loc[mask, [col_time, col_code, col_course, col_title, col_teacher]].copy()
+        sub = df_sheet.loc[mask, [col_time, col_code, col_course, col_title, col_teacher]].copy()
         if sub.empty:
             continue
 
@@ -110,10 +110,9 @@ def extract_from_excel(file_obj, period_label: str) -> pd.DataFrame:
         )
     return out
 
-
-# ------------------------------- #
-#   Tüm dosyaları birleştirme     #
-# ------------------------------- #
+# --------------------------------------------------- #
+#   2) Tüm dosyaları birleştir + isim normalize       #
+# --------------------------------------------------- #
 
 all_lectures = []
 
@@ -128,22 +127,103 @@ if not all_lectures:
 
 df = pd.concat(all_lectures, ignore_index=True)
 
-# Hoca adını temizle
-df["ogretim_uyesi"] = df["ogretim_uyesi"].astype(str).str.strip()
-# Tamamen saçma olanları (örn. 0) ele
-df = df[~df["ogretim_uyesi"].isin(["0", "nan"])]
+# Hoca adını temizle, 'raw' alanı sakla
+df["ogretim_uyesi_raw"] = df["ogretim_uyesi"].astype(str).str.strip()
+df = df[~df["ogretim_uyesi_raw"].isin(["", "0", "nan", "NaN"])]
 
 if df.empty:
     st.error("Hoca satırı bulunamadı. Lütfen dosya içeriklerini kontrol edin.")
     st.stop()
 
-# ------------------------------- #
-#   Özet tablolar                 #
-# ------------------------------- #
+# Küçük/büyük harf farklarını birleştirmek için anahtar üret
+# Örn: "muammer özdemir" → hepsi tek kişi
+name_key = df["ogretim_uyesi_raw"].str.lower()
 
-# Hoca / Dönem / Kurul bazında
-per_kurul = (
-    df.groupby(["ogretim_uyesi", "donem", "kurul"], as_index=False)
+# Aynı anahtar için ilk görülen yazımı 'kanonik' isim yapalım
+name_map = {}
+for raw_name, key in zip(df["ogretim_uyesi_raw"], name_key):
+    if key not in name_map:
+        name_map[key] = raw_name  # ilk görüleni kabul et
+
+df["ogretim_uyesi"] = name_key.map(name_map)
+
+# --------------------------------------------------- #
+#   3) Filtre alanları (dönem, kurul, hoca, ders)     #
+# --------------------------------------------------- #
+
+st.sidebar.markdown("---")
+st.sidebar.header("3️⃣ Filtreler")
+
+# Hoca listesi (normalize edilmiş)
+teacher_list = sorted(df["ogretim_uyesi"].unique())
+secili_hoca = st.sidebar.selectbox(
+    "Hoca filtresi",
+    options=["(Tümü)"] + teacher_list,
+)
+
+# Dönem filtresi
+secili_donem = st.sidebar.multiselect(
+    "Dönem filtresi",
+    options=sorted(df["donem"].unique()),
+    default=sorted(df["donem"].unique()),
+)
+
+# Kurul filtresi
+secili_kurul = st.sidebar.multiselect(
+    "Kurul filtresi",
+    options=sorted(df["kurul"].unique()),
+    default=sorted(df["kurul"].unique()),
+)
+
+# Ders filtresi (ders adı bazlı)
+ders_list = sorted(df["ders_adi"].dropna().astype(str).unique())
+secili_ders = st.sidebar.multiselect(
+    "Ders filtresi (Ders adı)",
+    options=ders_list,
+    default=ders_list,  # başlangıçta tüm dersler dahil
+)
+
+# --------------------------------------------------- #
+#   4) Filtreleri df üzerine uygula                   #
+# --------------------------------------------------- #
+
+df_filtered = df.copy()
+
+# Dönem & kurul filtresi
+df_filtered = df_filtered[
+    df_filtered["donem"].isin(secili_donem) & df_filtered["kurul"].isin(secili_kurul)
+]
+
+# Ders filtresi
+if secili_ders:
+    df_filtered = df_filtered[df_filtered["ders_adi"].astype(str).isin(secili_ders)]
+
+# Hoca filtresi
+if secili_hoca != "(Tümü)":
+    df_filtered = df_filtered[df_filtered["ogretim_uyesi"] == secili_hoca]
+
+if df_filtered.empty:
+    st.warning("Seçili filtrelere göre kayıt bulunamadı.")
+    st.stop()
+
+# --------------------------------------------------- #
+#   5) Özet tabloları filtrelenmiş df'den üret        #
+# --------------------------------------------------- #
+
+# Hoca bazında genel özet (filtrelenmiş veri üzerinden)
+per_hoca_goster = (
+    df_filtered.groupby("ogretim_uyesi", as_index=False)
+    .agg(
+        toplam_ders_saati=("saat", "count"),  # her satırı 1 ders saati kabul ettik
+        komite_sayisi=("kurul", lambda x: x.nunique()),
+        donem_sayisi=("donem", lambda x: x.nunique()),
+    )
+    .sort_values("toplam_ders_saati", ascending=False)
+)
+
+# Hoca / Dönem / Kurul bazında detay
+per_kurul_goster = (
+    df_filtered.groupby(["ogretim_uyesi", "donem", "kurul"], as_index=False)
     .agg(
         ders_sayisi=("saat", "count"),
         ders_kodlari=(
@@ -154,60 +234,20 @@ per_kurul = (
             "ders_basligi",
             lambda x: " | ".join(sorted(set(x.dropna().astype(str)))),
         ),
+        ders_adlari=(
+            "ders_adi",
+            lambda x: " | ".join(sorted(set(x.dropna().astype(str)))),
+        ),
     )
 )
 
-# Her satır 1 ders saati olduğu varsayımıyla:
-per_kurul["toplam_ders_saati"] = per_kurul["ders_sayisi"]
+per_kurul_goster["toplam_ders_saati"] = per_kurul_goster["ders_sayisi"]
 
-# Sadece hoca bazında genel özet
-per_hoca = (
-    df.groupby("ogretim_uyesi", as_index=False)
-    .agg(
-        toplam_ders_saati=("saat", "count"),
-        komite_sayisi=("kurul", lambda x: x.nunique()),
-        donem_sayisi=("donem", lambda x: x.nunique()),
-    )
-    .sort_values("toplam_ders_saati", ascending=False)
-)
+# --------------------------------------------------- #
+#   6) Görünüm                                       #
+# --------------------------------------------------- #
 
-# ------------------------------- #
-#   Filtreler                     #
-# ------------------------------- #
-
-secili_hoca = st.sidebar.selectbox(
-    "Hoca filtresi",
-    options=["(Tümü)"] + sorted(per_hoca["ogretim_uyesi"].unique()),
-)
-
-secili_donem = st.sidebar.multiselect(
-    "Dönem filtresi",
-    options=sorted(df["donem"].unique()),
-    default=sorted(df["donem"].unique()),
-)
-
-secili_kurul = st.sidebar.multiselect(
-    "Kurul filtresi",
-    options=sorted(df["kurul"].unique()),
-    default=sorted(df["kurul"].unique()),
-)
-
-# Filtreleri uygula
-mask_kurul = per_kurul["donem"].isin(secili_donem) & per_kurul["kurul"].isin(secili_kurul)
-per_kurul_filtreli = per_kurul[mask_kurul].copy()
-
-if secili_hoca != "(Tümü)":
-    per_hoca_goster = per_hoca[per_hoca["ogretim_uyesi"] == secili_hoca]
-    per_kurul_goster = per_kurul_filtreli[per_kurul_filtreli["ogretim_uyesi"] == secili_hoca]
-else:
-    per_hoca_goster = per_hoca.copy()
-    per_kurul_goster = per_kurul_filtreli.copy()
-
-# ------------------------------- #
-#   Görünüm                       #
-# ------------------------------- #
-
-st.subheader("👨‍🏫 Hocaların Toplam Ders Saatleri")
+st.subheader("👨‍🏫 Hocaların Toplam Ders Saatleri (Filtrelere Göre)")
 
 st.dataframe(
     per_hoca_goster.reset_index(drop=True),
@@ -223,7 +263,7 @@ st.download_button(
 
 st.markdown("---")
 
-st.subheader("📚 Hoca / Dönem / Kurul bazında detay")
+st.subheader("📚 Hoca / Dönem / Kurul / Ders bazında detay (Filtrelere Göre)")
 
 st.dataframe(
     per_kurul_goster.reset_index(drop=True),
@@ -233,12 +273,12 @@ st.dataframe(
 st.download_button(
     "⬇️ Kurul bazlı detaylı tabloyu CSV olarak indir",
     data=per_kurul_goster.to_csv(index=False).encode("utf-8-sig"),
-    file_name="hoca_donem_kurul_detay.csv",
+    file_name="hoca_donem_kurul_ders_detay.csv",
     mime="text/csv",
 )
 
 st.markdown("---")
 
-st.subheader("🔍 Satır bazında ham veriler (isteğe bağlı)")
+st.subheader("🔍 Satır bazında ham veriler (Filtrelenmiş)")
 with st.expander("Ham ders satırlarını göster"):
-    st.dataframe(df.reset_index(drop=True), use_container_width=True)
+    st.dataframe(df_filtered.reset_index(drop=True), use_container_width=True)
