@@ -66,42 +66,46 @@ def extract_possible_branches(df: pd.DataFrame):
 
 def strip_titles(raw: str) -> str:
     """
-    Hocanın ad-soyad bilgisinden Prof., Doç., Dr., Öğr. Üyesi, Uzm., Arş. Gör. vb.
-    ünvanları temizler. Hücrede birden fazla isim varsa (Ali / Veli) dokunmaz,
-    sadece baştaki ünvanları kaldırır.
+    Hocanın ad-soyad bilgisinden Prof., Doç., Dr., Öğr. Üyesi, Öğretim Üyesi,
+    Öğr. Üye., Öğrt. Üyesi, Uzm., Arş. Gör. vb. tüm unvanları temizler.
+    Birden fazla isim varsa (Ali / Veli) yine çalışır.
     """
     if pd.isna(raw):
         return ""
 
     text = str(raw)
 
-    # Ünvan kalıplarını sırayla sil
-    patterns = [
-        r"Prof\.?\s*Dr\.?",         # Prof.Dr. / Prof. Dr
-        r"Prof\.?",                # Prof. / Prof
-        r"Doç\.?\s*Dr\.?",         # Doç.Dr.
-        r"Yrd\.?\s*Doç\.?",        # Yrd.Doç.
-        r"Doç\.?",                 # Doç.
-        r"Uzm\.?\s*Dr\.?",         # Uzm.Dr.
-        r"Dr\.?\s*Öğr\.?\.?\s*Üyesi",  # Dr.Öğr.Üyesi
-        r"Dr\.?\s*Öğr\.?\.?\s*Uyesi",
-        r"Öğr\.?\.?\s*Üyesi",      # Öğr.Üyesi
-        r"Öğr\.?\.?\s*Gör\.?",     # Öğr.Gör.
-        r"Arş\.?\.?\s*Gör\.?",     # Arş.Gör.
-        r"Asistan\s*Dr\.?",        # Asistan Dr.
-        r"Dr\.?",                  # en genel Dr. kalıbı (en sona)
+    # Silinecek tüm ünvan blokları
+    title_patterns = [
+        r"Prof\.?\s*Dr\.?", r"Prof\.?", r"Profesor\.?", r"Profesör\.?",
+        r"Doç\.?\s*Dr\.?", r"Doç\.?", r"Docent\.?",
+        r"Yrd\.?\s*Doç\.?", r"Yard\.?\s*Doç\.?",
+        r"Uzm\.?\s*Dr\.?", r"Uzm\.?",
+
+        r"Dr\.?\s*Öğr\.?\s*Üyesi", r"Dr\.?\s*Öğr\.?\s*Uyesi",
+        r"Öğr\.?\s*Üyesi", r"Öğr\.?\s*Uyesi",
+        r"Öğr\.?\s*Üye\.?", r"Öğr\.?\s*Uye\.?",
+        r"Öğrt\.?\s*Üyesi", r"Öğrt\.?\s*Uyesi",
+        r"Öğretim\s*Üyesi", r"Öğretim\s*Uyesi",
+
+        r"Arş\.?\s*Gör\.?", r"Arş\.?\s*Gorevlisi", r"Arş\.?\s*Gör\.?\s*Dr\.?",
+        r"Asistan\s*Dr\.?",
+
+        r"Dr\.?",   # en genel Dr (en sona)
     ]
 
     clean = text
-    for p in patterns:
+
+    # Tüm unvan bloklarını sırayla sil
+    for p in title_patterns:
         clean = re.sub(p, "", clean, flags=re.IGNORECASE)
 
-    # Fazla noktalar, bozuk boşluklar
-    clean = clean.replace("..", ".")
-    clean = re.sub(r"\s+", " ", clean)
-    clean = clean.strip(" .,\t")
+    # Fazla semboller, noktalar, boşluklar
+    clean = re.sub(r"[.,]+", " ", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()
 
     return clean
+
 
 # --------------------------------------------------- #
 #  Streamlit temel ayar                               #
